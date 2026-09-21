@@ -252,3 +252,10 @@ Most of these limitations are being addressed and will improve over time!
 ```
 
 **BEND IS YOUNG. EXPECT BUGS AND [REPORT THEM](https://github.com/bendlang/bend/issues).**
+
+## Experimental WebGPU backend
+
+This fork's `feat/webgpu` branch includes a WGSL backend, browser/Dawn runners,
+and a Wasm host using upstream-generated C. See [guide/WEBGPU.md](guide/WEBGPU.md)
+for setup, supported behavior, validation and limitations. The ordinary native
+compiler path and the human-written language checker remain intact.

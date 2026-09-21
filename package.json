@@ -1,0 +1,16 @@
+{
+  "name": "bend-webgpu-development",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/bun": "1.3.11",
+    "@webgpu/types": "0.1.72",
+    "typescript": "5.9.3",
+    "webgpu": "0.6.1"
+  }
+}

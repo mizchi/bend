@@ -40,8 +40,20 @@ allow("flake.nix", 1500);
 allow("bend2/base.bend", 32000);
 allow("bend2/bend.lean", 400000);
 allow("bend2/bend.ts", 43000);
-allow("bend2/comp.ts", 65000);
+// Wasm platform + optional host hooks: 64,936 -> 66,609 measured tokens.
+allow("bend2/comp.ts", 67000);
 allow("bend2/main.ts", 10000);
+// Optional WebGPU/Wasm backend, local tools and regression corpus.
+allow(/^bend2\/webgpu\/[a-z-]+\.(ts|mjs|c|wgsl)$/, 12000);
+allow(/^tools\/webgpu\/[a-z-]+\.(ts|mjs|py|sh)$/, 4000);
+allow(/^tests\/webgpu\/[a-z-]+(\.(test|spec))?\.mjs$/, 8000);
+allow(/^demos\/webgpu\/(compatibility\/)?[a-zA-Z0-9_-]+\.(bend|mjs|html|wgsl|md)$/, 5000);
+allow("guide/WEBGPU.md", 8000);
+allow("justfile", 3000);
+allow("package.json", 1000);
+allow("pnpm-lock.yaml", 6000);
+allow("playwright.webgpu.config.mjs", 1000);
+allow("tsconfig.webgpu.json", 1000);
 allow(/^bend2\/effs\/[a-z0-9_]+\.(c|js)$/, 4000);
 allow(/^bend2\/pack\/(\.gitignore|package\.json|tsconfig\.json|bun\.lock)$/, 1000);
 allow(/^bend2\/docs\/(BendRT|BendTT)\/(main\.typ|refs\.bib)$/, 60000);

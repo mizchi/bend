@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bend on WebGPU</title>
+<style>
+  body { font: 16px/1.7 system-ui, sans-serif; max-width: 760px; margin: 48px auto; padding: 0 24px; color: #203042; background: #f5f7fa; }
+  button { font: inherit; padding: 8px 24px; cursor: pointer; }
+  pre { min-height: 48px; padding: 16px; background: white; border: 1px solid #ccd6e0; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+<h1>Bend on WebGPU</h1>
+<p>Run a compiled Bend program on your GPU. The default example sums integers
+from 0 to 1,048,575 using U32 arithmetic. Its expected output is <code>4294443008</code>.</p>
+<button id="run" type="button">Run on GPU</button>
+<p role="status">Ready</p>
+<h2>Output</h2>
+<pre id="stdout"></pre>
+<h2>Run details</h2>
+<pre id="details"></pre>
+<script type="module" src="./page.mjs"></script>
+</html>
