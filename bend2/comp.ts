@@ -38,6 +38,7 @@ type Seg = {
   host?: boolean;
   spin?: boolean;
   fork?: boolean;
+  bridge?: { term: Bend.LTerm; captures: { id: number; name: string; lay: HostLay }[] };
 };
 
 type Spine = {
@@ -1441,7 +1442,7 @@ function def_body(cb: Carb, k: Bend.Name): TLD | undefined {
   const tld = cb.book.tlds[k];
   if (tld?.$ === "Def" && tld.e !== undefined && tld.h === undefined) {
     const h = Bend.term_higher(tld.e);
-    const n = tld.n + Math.min(def_raise(cb.book, h, tld.n),
+    const n = tld.n + Math.min(HOST_MODE ? 0 : def_raise(cb.book, h, tld.n),
       tele_unbind(cb.book, tld.T).doms.length - tld.n);
     cb.book.tlds[k] = { ...tld, n, h };
   }
@@ -1536,6 +1537,7 @@ function flat_call(c: Carb, t: HTerm): boolean {
 
 // A def is flat when its source is and every def it calls is.
 function flat_of(k: Bend.Name): boolean {
+  if (HOST_MODE) return false;
   return memo(FLATS, k, () => {
     const own = SRCS.get(k);
     FLATS.set(k, false);
@@ -2297,6 +2299,8 @@ function emit_clo(fl: File, x: HTerm, ty: HTerm | null): Val {
   const outer = { seg: fl.seg, uses: fl.uses, spares: fl.spares,
     tab: fl.tab, rest: fl.rest };
   const [arg] = seg_open(fl, name, BOX, null, live, "x", ["w64"], [x]);
+  if (HOST_MODE) fl.seg.bridge = { term: Bend.term_lower(x, PROBES.length),
+    captures: live.map(([p,b]) => ({ id:p.i, name:p.k, lay:host_layout(fl.book,b.A,b.val.lay) })) };
   emit_body(fl, x, ty, [], [val_new([arg], BOX)], null);
   Object.assign(fl, outer);
   return val_new([clo], BOX);
@@ -2355,6 +2359,7 @@ function emit_ctr(fl: File, x: Of<"Ctr">, ty: HTerm | null,
 }
 
 function emit_fold(fl: File, t: HTerm): HTerm | null {
+  if (HOST_MODE) return null;
   const s = term_strip(t);
   const r = memo(FOLDS, s, () => {
     if (term_const(s)) {
@@ -2894,7 +2899,7 @@ function compile_reqs(fl: File): void {
     for (const [m, g] of macs) {
       fl.reqs += `#pragma push_macro("${m}")\n#define ${m} ${g}\n`;
     }
-    fl.reqs += eff_src(tld.i!.find((x) => x.endsWith(".c"))
+    if (!HOST_MODE) fl.reqs += eff_src(tld.i!.find((x) => x.endsWith(".c"))
       ?? die("no .c import: " + k), seen);
     for (const [m] of macs) {
       fl.reqs += `#pragma pop_macro("${m}")\n`;
@@ -2987,11 +2992,14 @@ function compile_tables(fl: File, entries: Seg[]): string[] {
     `(V)[${j}] = ${r};`).join(" ")}`, "",
   `#define WL_TAKE(V) ${rs.slice(0, resw).map((r, j) =>
     `${r} = (V)[${j}];`).join(" ")}`, "",
-  `#define WL_SIG Env e, Stk sp, u32 seq, u32 rn, ${ws.map((w) =>
-    "Term " + w).join(", ")}`, "", `#define WL_ALL e, sp, seq, rn, ${ws
+  `#define WL_SIG WL_ENV_SIG, Stk sp, u32 seq, u32 rn, ${ws.map((w) =>
+    "Term " + w).join(", ")}`, "", `#define WL_ALL WL_ENV_ALL, sp, seq, rn, ${ws
     .join(", ")}`, "",
   `#define WL_TABLE ${entries.map((s) => `WL_X(${s.fid})`).join(" ")}`
     + " WL_X(FID_EXIT)");
+  if (HOST_MODE) defs.push(
+    `#define WL_HOST_STORE ${ws.map(w=>`host_checkpoint.${w} = ${w};`).join(" ")}`,
+    `#define WL_HOST_ARGS ${ws.map(w=>`host_checkpoint.${w}`).join(", ")}`);
   return defs;
 }
 
@@ -3059,6 +3067,7 @@ export function compile_book(book: Bend.Book): string {
     `static const char* SHOW_NAMES[] = { ${show.names.map((n) =>
       JSON.stringify(n)).join(", ")} };`, "#endif"];
   const defs = compile_tables(fl, entries);
+  if (HOST_MODE) HOST_METADATA = host_metadata(fl, entries);
   defs.push(`#define MAIN_FID ${seg_fid("main")}`, `#define MAIN_PURE ${
     Number(show !== null)}`,
     `#define BLK_SHR ${Number(cb.hot.has("t:Array"))}`);
@@ -3352,6 +3361,10 @@ function a32_ops(f: (k: string) => string): string {
 }
 
 const TEMPLATE = String.raw`
+#if defined(__EMSCRIPTEN__)
+#define BEND_WASM_HEAP_BYTES (64ull << 20)
+#define BEND_WASM_STACK_WORDS (1ull << 20)
+#endif
 
 // Imports
 // =======
@@ -3473,7 +3486,17 @@ using namespace metal;
 #define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
 #define WL_FN      static PRESERVE(preserve_none) __attribute__((noinline)) Reply
 #define WL_CASE(F) WL_FN WL_##F(WL_SIG)
+// wasm32 lowers by-value Env to a stack pointer. Do not carry that hidden
+// pointer through musttail: a callee can reuse the caller's stack storage.
+#if defined(__EMSCRIPTEN__)
+#define WL_ENV_SIG Corpus wm, DEV u64* wc
+#define WL_ENV_ALL e.mem, e.alc
+#define WL_OPEN    { Env e = {wm, wc}; WL_BANK u32 rn;
+#else
+#define WL_ENV_SIG Env e
+#define WL_ENV_ALL e
 #define WL_OPEN    { WL_BANK u32 rn;
+#endif
 #define WL_JMP(F)  __attribute__((musttail)) return WL_##F(WL_ALL)
 #define WL_DYN(F)  __attribute__((musttail)) return wl_tab[F](WL_ALL)
 #endif
@@ -3483,7 +3506,11 @@ using namespace metal;
 #define WL_POP()    { sp -= LANE_STEP; WL_DYN((Fid)STK(0)); }
 
 #define LANE_STEP (DEVICE ? (int64_t)CUBE : 1)
+#if defined(__EMSCRIPTEN__)
+#define STK(I)    (*wasm_stack_at(sp, (int64_t)(I)))
+#else
 #define STK(I)    sp[(int64_t)(I) * LANE_STEP]
+#endif
 
 #define WL_RETN(N)  { rn = (N); WL_POP(); }
 #define WL_CONT     STK(-3)
@@ -3601,7 +3628,11 @@ typedef u32* Cur;
 #define LINE      16
 #define PAGE_BITS 7
 #define PAGE_LEN  (1ull << PAGE_BITS)
+#if defined(__EMSCRIPTEN__)
+#define CUBE_T    16
+#else
 #define CUBE_T    128
+#endif
 #define CUBE      ((u64)CUBE_T * CUBE_T)
 #define CUBE_G    (1u << CUBE_LOG)
 #define LANES     ((u64)CUBE_T << CUBE_LOG)
@@ -3649,7 +3680,11 @@ static Corpus CORPUS;
 static u64    ALC[CUBE_T + 1][3 * ALC_WORDS] __attribute__((aligned(128)));
 static u32    KEEP_WORDS;
 // the bag: 2^CUBE_LOG groups of CUBE_T lanes (a -D constant on the device)
+#if defined(__EMSCRIPTEN__)
+static u32    CUBE_LOG = 0;
+#else
 static u32    CUBE_LOG = 7;
+#endif
 static u32    bank_lock;
 
 static u32            pool_size;
@@ -3831,8 +3866,21 @@ static void err_fail(const char* msg) {
 }
 
 static void err_post(Corpus H, Err code) {
+#if defined(__EMSCRIPTEN__)
+  if (code == ERR_HEAP) err_fail("Wasm heap exhausted (fixed 64 MiB corpus)");
+#endif
   err_fail(ERR_TEXT[code]);
 }
+
+#if defined(__EMSCRIPTEN__)
+static inline Term* wasm_stack_at(Stk sp, int64_t offset) {
+  int64_t index = (sp - io_stk) + offset;
+  if (index < 0 || (u64)index >= BEND_WASM_STACK_WORDS) {
+    err_fail("Wasm evaluation stack exhausted");
+  }
+  return io_stk + index;
+}
+#endif
 
 static void err_trap(int sig) {
   err_post(NULL, ERR_DEEP);
@@ -4503,6 +4551,26 @@ static u32 root_take(Corpus H, THR Term* v) {
 #define WL_SPUN
 #define WL_AGAIN(F) __attribute__((musttail)) return WL_##F(WL_ALL)
 
+#if defined(BEND_ASYNC_HOST)
+static u32 host_fuel;
+static bool host_yielded;
+static struct { Stk sp; u32 fid, seq, rn; WL_BANK } host_checkpoint;
+static Reply host_suspend(u32 fid, WL_SIG) {
+  host_checkpoint.sp = sp; host_checkpoint.fid = fid;
+  host_checkpoint.seq = seq; host_checkpoint.rn = rn;
+  WL_HOST_STORE
+  host_yielded = true;
+  return 0;
+}
+#define HOST_POLL(F) if (--host_fuel == 0) return host_suspend(F, WL_ALL)
+#undef WL_JMP
+#undef WL_DYN
+#undef WL_AGAIN
+#define WL_JMP(F) { HOST_POLL(F); __attribute__((musttail)) return WL_##F(WL_ALL); }
+#define WL_DYN(F) { u32 next = (F); HOST_POLL(next); __attribute__((musttail)) return wl_tab[next](WL_ALL); }
+#define WL_AGAIN(F) { HOST_POLL(F); __attribute__((musttail)) return WL_##F(WL_ALL); }
+#endif
+
 typedef Reply (PRESERVE(preserve_none) *WlFn)(WL_SIG);
 #define WL_X(F) WL_FN WL_##F(WL_SIG);
 WL_TABLE WL_X(FID_ENTER)
@@ -4867,6 +4935,15 @@ static void* pool_mmap(u64 bytes) {
   return p;
 }
 
+#if defined(__EMSCRIPTEN__)
+static Term* pool_stack(void) {
+  Term* p = calloc(BEND_WASM_STACK_WORDS, sizeof(Term));
+  if (p == NULL) {
+    err_fail("Wasm evaluation stack allocation failed");
+  }
+  return p;
+}
+#else
 static Term* pool_stack(void) {
   u64   len = 1ull << 31;
   char* p   = pool_mmap(len + 16384 + SIGSTKSZ);
@@ -4880,6 +4957,7 @@ static Term* pool_stack(void) {
   sigaction(SIGBUS, &sa, NULL);
   return (Term*)p;
 }
+#endif
 
 static void* pool_work(void* arg) {
   Term* stk  = pool_stack();
@@ -5310,6 +5388,15 @@ static void cube_run(Corpus H, bool gpu) {
 
 static u64 corpus_size;
 
+#if defined(__EMSCRIPTEN__)
+static void* corpus_map(u64 size) {
+  void* p = calloc(1, (size_t)size);
+  if (p == NULL) {
+    err_fail("Wasm heap allocation failed");
+  }
+  return p;
+}
+#else
 static void* corpus_map(u64 size) {
   u64   hint = 1ull << 45;
   void* p    = pool_try((void*)hint, size);
@@ -5325,6 +5412,7 @@ static void* corpus_map(u64 size) {
   }
   return p;
 }
+#endif
 
 static void corpus_lay(Corpus H, u64 size) {
   u64 span = size / 8;
@@ -5344,6 +5432,11 @@ static void corpus_lay(Corpus H, u64 size) {
   a32_store_rel(a32_at(H, H_CAP), (u32)cap);
 }
 
+#if defined(__EMSCRIPTEN__)
+static bool corpus_grow(Corpus H, u64 need) {
+  return false; // Loc values require a fixed corpus base.
+}
+#else
 static bool corpus_grow(Corpus H, u64 need) {
   bool ok = true;
   LOCK(bank_lock);
@@ -5362,11 +5455,16 @@ static bool corpus_grow(Corpus H, u64 need) {
   UNLOCK(bank_lock);
   return ok;
 }
+#endif
 
 static Corpus corpus_setup(bool gpu, long threads, u64 bytes) {
   io_gpu     = gpu;
   KEEP_WORDS = gpu ? CHUNK : CAP_WORDS;
+#if defined(__EMSCRIPTEN__)
+  u64 dflt   = BEND_WASM_HEAP_BYTES;
+#else
   u64 dflt   = gpu ? gpu_span() : 1ull << 33;
+#endif
   u64 size   = (gpu && bytes != 0 ? bytes : dflt) & ~16383ull;
   CORPUS     = gpu ? gpu_map(size) : corpus_map(size);
   Corpus H   = CORPUS;
@@ -5390,7 +5488,11 @@ OUTLINE Term corpus_eval(Corpus H, Term t) {
   Env  e = { H, ALC[0] };
   Term rv[WL_RESW];
   for (;;) {
+#if defined(__EMSCRIPTEN__)
+    Reply r = work_loop(e, io_stk, t, 1);
+#else
     Reply r = work_loop(e, io_stk, t, !BANGS && pool_size == 1);
+#endif
     if (r == 0) {
       if (root_done(H)) {
         break;
@@ -6169,8 +6271,13 @@ static void cli_fail(const char* msg, const char* arg) {
 // ====
 
 int main(int argc, char** argv) {
+#if defined(__EMSCRIPTEN__)
+  long thr = 1;
+  int  gpu = 0;
+#else
   long thr = 0;
   int  gpu = -1;
+#endif
   u64  mem = 0;
   io_argv = argv + 1;
   for (int i = 1; i < argc; i += 1) {
@@ -6213,7 +6320,14 @@ int main(int argc, char** argv) {
       io_argv[io_argc++] = argv[i];
     }
   }
+#if defined(__EMSCRIPTEN__)
+  if (thr != 1 || gpu != 0) {
+    cli_fail("Wasm supports only --threads 1 --gpu off", NULL);
+  }
+  bool dev = false;
+#else
   bool dev = gpu != 0 && BANGS != 0 && gpu_probe();
+#endif
   if (gpu == 1 && BANGS != 0 && !dev) {
     cli_fail("--gpu on, but this binary found no GPU device", NULL);
   }
@@ -6589,3 +6703,45 @@ function chan_shut(row) {
 `.slice(1);
 
 const TAB_BAD = /\b(?!(?:fround|imul|Number|BigInt)\()\w+\(/;
+
+// Optional external-host metadata. Native compile_book callers keep the existing path.
+let HOST_MODE = false;
+let HOST_METADATA: ReturnType<typeof host_metadata> | null = null;
+type HostLay = { ks: Kind[]; arms: {k:string;fs:{at:number;lay:HostLay}[]}[] | null;
+  array?: {element:HostLay;arr:boolean;lgs:number} };
+function host_layout(book: Bend.Book, A: HTerm | null, lay = lay_of(book,A)): HostLay {
+  const adt = ty_adt(book,A);
+  if (adt?.k === "Array") {
+    const el = lay_el(book,adt.x[0]);
+    return {...lay,array:{element:host_layout(book,adt.x[0],el),...lay_arr(el)}};
+  }
+  return {...lay,arms:lay.arms?.map(a=>{
+    const ctr=book.ctrs[a.k];
+    const As=ctr?ctr_doms(book,ctr,adt?.x):[];
+    return {...a,fs:a.fs.map((f,i)=>({...f,lay:host_layout(book,As[i]??null,f.lay)}))};
+  })??null};
+}
+function host_metadata(fl: File, entries: Seg[]) {
+  return {
+    constructors: [...fl.cids].map(([name,arity],cid) => ({ name,cid,arity,
+      lay:host_layout(fl.book,null,lay_node(fl.book,name)),
+      fields: fl.book.ctrs[name] ? ctr_tail(fl.book,fl.book.ctrs[name]).map((d,i)=>live_dom(d)?i:-1).filter(i=>i>=0) : [] })),
+    functions: done_defs(fl).map(([name])=>({name,
+      fid:entries.findIndex(s=>s.fid===seg_fid(name)),
+      params:tele_unbind(fl.book,(fl.book.tlds[name] as Def).T).doms
+        .slice(0,(fl.book.tlds[name] as Def).n).map(d=>live_dom(d)?host_layout(fl.book,d[2]):null),
+      ret:host_layout(fl.book,Bend.tele_fill(fl.book,(fl.book.tlds[name] as Def).T,
+        Array((fl.book.tlds[name] as Def).n).fill(DUMMY),Bend.ctx_nil()),sig_def(fl,name).ret),
+      borrows:brw_of(fl,name), gpu:fl.bangs.has(name)})),
+    closures:entries.flatMap((s,fid)=>s.bridge?[{fid,...s.bridge}]:[]),
+    effects:done_defs(fl,def_foreign).map(([name])=>({name,cid:[...fl.cids.keys()].indexOf(name)})),
+    main: { pure:io_type(fl.book)===null, ret:sig_def(fl,"main").ret },
+  };
+}
+export function compile_host(book: Bend.Book) {
+  HOST_MODE=true;
+  try {
+    const source=compile_book(book);
+    return {source, metadata:HOST_METADATA!};
+  } finally { HOST_MODE=false; HOST_METADATA=null; }
+}

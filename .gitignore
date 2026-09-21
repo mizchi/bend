@@ -3,3 +3,9 @@
 .agents/
 node_modules/
 *.tgz
+
+# Local WebGPU/Wasm build outputs and browser test artifacts.
+build/
+test-results/
+playwright-report/
+__pycache__/
